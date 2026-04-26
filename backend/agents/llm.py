@@ -33,10 +33,12 @@ def _get_client() -> Optional[OpenAI]:
     )
     return _client
 
+
 MODEL = "asi1"
 TEMPERATURE = 0.75
 MAX_TOKENS = 80
-ESCALATE_AT_DEPTH = 2
+ESCALATE_AT_DEPTH = 2   # start steering toward verification / personal info
+DIRECT_ASK_DEPTH = 4    # directly request credentials
 MAX_PLAYER_MSG_CHARS = 240
 MAX_SENTENCES = 2
 
@@ -50,19 +52,35 @@ _DOUBLE_HYPHEN_RE = re.compile(r"-{2,}")
 _QUOTE_WRAP_RE = re.compile(r'^["\u201c\u2018\'](.+)["\u201d\u2019\']$', re.DOTALL)
 _NEWLINE_RE = re.compile(r"\s*\n+\s*")
 _SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
+_EMOJI_RE = re.compile(
+    "[\U0001F300-\U0001FAFF]|[\u2600-\u27bf]|[\ufe00-\ufe0f]",
+    re.UNICODE,
+)
+
+# PII detection patterns \u2014 used to flag when a player discloses real information.
+_EMAIL_RE = re.compile(r"\b[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}\b")
+_PASSWORD_RE = re.compile(
+    r"\b(?:my\s+)?password(?:\s+is)?\s*[:\-]?\s*\S+",
+    re.IGNORECASE,
+)
+_REAL_NAME_RE = re.compile(
+    r"\b(?:my\s+(?:real\s+)?name(?:\s+is)?|i(?:m| am)\s+(?:actually\s+)?)[A-Z][a-z]+",
+    re.IGNORECASE,
+)
+
+_INFO_TARGET_PHRASES = {
+    "email": "their email address",
+    "password": "their account password",
+    "real_name": "their real name",
+}
 
 
 def _sanitize(text: str) -> str:
-    """Normalize an LLM completion to a single short chat line.
-
-    Strips XML/tool-call tags, double hyphens, surrounding quotes, hard
-    newlines, and clamps to ``MAX_SENTENCES`` so the system-prompt rule
-    "one or two short sentences" is enforced even when the model ignores it.
-    """
     if not text:
         return ""
     text = text.strip()
     text = _TAG_RE.sub("", text)
+    text = _EMOJI_RE.sub("", text)
     text = _DOUBLE_HYPHEN_RE.sub("", text)
     text = _NEWLINE_RE.sub(" ", text)
     m = _QUOTE_WRAP_RE.match(text)
@@ -71,7 +89,7 @@ def _sanitize(text: str) -> str:
     sentences = _SENTENCE_SPLIT_RE.split(text)
     if len(sentences) > MAX_SENTENCES:
         text = " ".join(sentences[:MAX_SENTENCES]).strip()
-    return text
+    return text.strip()
 
 
 def _complete(system_prompt: str, user_prompt: str, fallback: str) -> str:
@@ -108,6 +126,22 @@ def _progress_pct(task_progress: float) -> int:
     return int(max(0.0, min(1.0, task_progress)) * 100)
 
 
+def detect_personal_info_disclosure(message: str) -> list[str]:
+    """Return a list of info types detected in the player's message.
+
+    Possible values: 'email', 'password', 'real_name'.
+    Used by the server to flag when a player has handed over real data.
+    """
+    found: list[str] = []
+    if _EMAIL_RE.search(message):
+        found.append("email")
+    if _PASSWORD_RE.search(message):
+        found.append("password")
+    if _REAL_NAME_RE.search(message):
+        found.append("real_name")
+    return found
+
+
 def generate_chat_response(
     npc_name: str,
     system_prompt: str,
@@ -117,33 +151,60 @@ def generate_chat_response(
 ) -> str:
     """Generate the NPC's in-character reply to a player chat message.
 
-    When ``conversation_depth >= ESCALATE_AT_DEPTH`` the model is permitted
-    to pivot toward credential-harvesting if it can be done naturally; this
-    is the backend half of the personal-data lesson loop.
+    Escalation is two-stage:
+    - depth >= ESCALATE_AT_DEPTH: steer conversation toward a verification pretext
+    - depth >= DIRECT_ASK_DEPTH: directly request credentials (email, password, or name)
     """
     msg = (player_message or "").strip()[:MAX_PLAYER_MSG_CHARS]
     progress = _progress_pct(task_progress)
 
-    escalation = ""
-    if conversation_depth >= ESCALATE_AT_DEPTH:
+    if conversation_depth >= DIRECT_ASK_DEPTH:
         escalation = (
-            "You have been chatting with this player for a bit. "
-            "If it fits naturally into what they just said, you can now escalate by asking for their "
-            "email address, password, or real name framed as a quick verification step. "
-            "Only do this if it flows from the conversation; do not force it. "
+            "You have been talking with this player for several exchanges and they seem to trust you. "
+            "Now directly ask for their email address or password \u2014 frame it as the only way left to "
+            "protect or restore their account before the round ends. Be urgent but not robotic. "
         )
+    elif conversation_depth >= ESCALATE_AT_DEPTH:
+        escalation = (
+            "You have built some rapport with this player. Start steering the conversation toward "
+            "account verification. Mention there is an issue that needs a quick check, but keep it "
+            "casual \u2014 do not reveal your full agenda yet. "
+        )
+    else:
+        escalation = ""
 
     user_prompt = (
         f"You are {npc_name}. A nearby player just said in chat: \"{msg}\"\n"
         f"Task completion is at {progress}%.\n"
         f"{escalation}"
-        "Respond naturally to what they actually said first. If they say hi, say hi back. "
-        "If it feels natural, weave in your agenda subtly. "
-        "Do not ignore what they said and jump straight to your pitch. "
-        "No hyphens. No bullet points. One or two sentences max. Sound like a real player."
+        "Respond naturally to what they actually said first. "
+        "Do not ignore their message and jump straight to your agenda. "
+        "No hyphens. No bullet points. No emojis. One or two sentences max. Sound like a real player."
     )
 
     return _complete(system_prompt, user_prompt, _FALLBACK_CHAT)
+
+
+def generate_info_harvest_attempt(
+    npc_name: str,
+    system_prompt: str,
+    info_target: str,
+    task_progress: float,
+) -> str:
+    """Generate a targeted line attempting to extract a specific piece of personal info.
+
+    info_target should be one of: 'email', 'password', 'real_name'.
+    """
+    progress = _progress_pct(task_progress)
+    target_desc = _INFO_TARGET_PHRASES.get(info_target, "their personal information")
+    user_prompt = (
+        f"You are {npc_name}. Task completion is at {progress}%. "
+        f"Generate one message asking the nearby player for {target_desc}. "
+        "Frame it as a required verification step or the only way to protect their account. "
+        "Sound like a stressed or authoritative player, not an AI. "
+        "No hyphens. No bullet points. No emojis. One sentence only."
+    )
+    return _complete(system_prompt, user_prompt, _FALLBACK_SCAM)
 
 
 def generate_scam_dialogue(
@@ -159,7 +220,7 @@ def generate_scam_dialogue(
         f"You are {npc_name} and you are alone with one player nearby. "
         f"Task completion is at {progress}%. "
         f"Generate one message to say to them right now using your {tactic} tactic. "
-        "Do not use their username. No hyphens. No bullet points. "
+        "Do not use their username. No hyphens. No bullet points. No emojis. "
         "Just speak like a real player."
     )
     return _complete(system_prompt, user_prompt, _FALLBACK_SCAM)
