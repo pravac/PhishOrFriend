@@ -26,6 +26,7 @@ local SubmitVote          = makeEvent("SubmitVote")
 local VoteResult          = makeEvent("VoteResult")
 local ShowEndScreen       = makeEvent("ShowEndScreen")
 local PlayerScammed       = makeEvent("PlayerScammed")
+makeEvent("DataHarvestAttempt")
 
 -- ── Config ────────────────────────────────────────────────────────────────────
 local TASK_PHASE_DURATION = 90

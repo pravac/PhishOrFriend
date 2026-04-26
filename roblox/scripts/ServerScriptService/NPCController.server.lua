@@ -15,19 +15,52 @@ local function getOrMakeEvent(name)
 	return e
 end
 
-local PlayerChatted = getOrMakeEvent("PlayerChatted")
-local NPCResponse   = getOrMakeEvent("NPCResponse")
-local ShowDialogue  = getOrMakeEvent("ShowDialogue")
+local PlayerChatted      = getOrMakeEvent("PlayerChatted")
+local NPCResponse        = getOrMakeEvent("NPCResponse")
+local ShowDialogue       = getOrMakeEvent("ShowDialogue")
+local DataHarvestAttempt = getOrMakeEvent("DataHarvestAttempt")
 
 local BACKEND_URL       = "https://phishorfriend-production.up.railway.app"
 local POLL_MIN          = 8
 local POLL_MAX          = 12
-local DIALOGUE_COOLDOWN = 25
-local CHAT_SUPPRESS_SEC = 15  -- seconds to suppress wander dialogue after chat response
+local DIALOGUE_COOLDOWN = 18   -- minimum seconds between any NPC utterance
+local CHAT_SUPPRESS_SEC = 8    -- seconds to suppress wander/ambient dialogue after a chat response
+local AMBIENT_MIN       = 22   -- ambient chatter fires randomly in this window
+local AMBIENT_MAX       = 38
 
 local NPC_CONFIGS = {
-	{ name = "Alex",   npcType = "urgency",    displayName = "Alex"   },
-	{ name = "Jordan", npcType = "authority",  displayName = "Jordan" },
+	{
+		name        = "Alex",
+		npcType     = "urgency",
+		displayName = "Alex",
+		-- Lines that sound like an anxious, rushed player — matches Alex's urgency persona
+		ambientLines = {
+			"anyone know what order to do these tasks in",
+			"this map always stresses me out ngl",
+			"wait how much time is left again",
+			"is it just me or is this round going really fast",
+			"has anyone else noticed anything off this round",
+			"i keep feeling like im missing something important",
+			"can someone remind me which tasks are left",
+			"why does this place feel so sketchy every time",
+		},
+	},
+	{
+		name        = "Jordan",
+		npcType     = "authority",
+		displayName = "Jordan",
+		-- Lines that sound watchful and official — matches Jordan's authority persona
+		ambientLines = {
+			"everyone doing alright out there",
+			"good work everyone keep it up",
+			"keeping an eye on things dont worry",
+			"anyone need help finding their tasks",
+			"making solid progress this round",
+			"things look fine from where im standing",
+			"stay focused on your assignments everyone",
+			"i will do a sweep of the other side of the map",
+		},
+	},
 }
 
 _G.NPCRegistry = {}
@@ -175,6 +208,50 @@ local function isPositiveResponse(message)
 	return false
 end
 
+-- ── Personal data detection ───────────────────────────────────────────────────
+-- Patterns that suggest a player typed real personal information.
+-- Roblox filters most of these, but some slip through; we also detect the attempt.
+local DATA_SHARE_PATTERNS = {
+	"%a[%w%.]+@%a[%w%.]+%.%a%a+",       -- anything@anything.tld
+	"password%s+is%s+%S+",              -- "password is X"
+	"my%s+pass%s+is%s+%S+",             -- "my pass is X"
+	"pass%s*:%s*%S+",                   -- "pass: X"
+	"pw%s*:%s*%S+",                     -- "pw: X"
+	"%d%d%d%s*%-%s*%d%d%d%s*%-%s*%d%d%d%d", -- phone number like 123-456-7890
+	"my%s+name%s+is%s+%a+%s+%a+",       -- "my name is First Last"
+	"real%s+name%s+is%s+%a+",           -- "real name is X"
+}
+
+-- Keywords that indicate the NPC just asked the player for personal data.
+local DATA_REQUEST_KEYWORDS = {
+	"email", "password", "real name", "phone number", "phone no",
+	"your name", "full name", "credentials", "log in for you",
+	"log into your", "verify your identity", "account password",
+}
+
+local function playerSharedData(message)
+	local lower = message:lower()
+	for _, pattern in ipairs(DATA_SHARE_PATTERNS) do
+		if lower:match(pattern) then return true end
+	end
+	return false
+end
+
+-- Returns true if the player tried to type personal info but Roblox filtered it
+-- (a run of 4+ '#' chars in the message while the NPC was actively asking for data).
+local function playerTriedFilteredShare(message)
+	local run = message:match("#+")
+	return run ~= nil and #run >= 4
+end
+
+local function npcAskingForData(message)
+	local lower = message:lower()
+	for _, kw in ipairs(DATA_REQUEST_KEYWORDS) do
+		if lower:find(kw, 1, true) then return true end
+	end
+	return false
+end
+
 -- ── Backend call ──────────────────────────────────────────────────────────────
 local function queryBackend(npcConfig, nearbyPlayers, isolatedPlayer)
 	local gameState = _G.GameState
@@ -203,12 +280,14 @@ local function runNPC(config)
 	_G.NPCRegistry[config.name] = { npcType = config.npcType }
 
 	npcStates[config.name] = {
-		isScamming       = false,
-		lastDialogueTime = 0,
-		lastChatTime     = 0,
-		visitedTasks     = {},
-		usedLines        = {},
-		model            = nil,
+		isScamming        = false,
+		isAskingForData   = false,
+		conversationCount = {},  -- [playerName] = number of chat exchanges
+		lastDialogueTime  = 0,
+		lastChatTime      = 0,
+		visitedTasks      = {},
+		usedLines         = {},
+		model             = nil,
 	}
 	local state = npcStates[config.name]
 
@@ -252,6 +331,24 @@ local function runNPC(config)
 		end
 	end)
 
+	-- Ambient chatter loop — character-specific idle lines, fires every 22-38 s
+	task.spawn(function()
+		task.wait(math.random(5, 15))  -- stagger so the two NPCs don't speak at the same instant
+		while npcModel and npcModel.Parent do
+			task.wait(math.random(AMBIENT_MIN, AMBIENT_MAX))
+			local gs = _G.GameState
+			if not (gs and gs.phase == "TASK_PHASE") then continue end
+			if state.isScamming then continue end
+			if (tick() - state.lastDialogueTime) < DIALOGUE_COOLDOWN then continue end
+			if (tick() - state.lastChatTime) < CHAT_SUPPRESS_SEC then continue end
+			local lines = config.ambientLines
+			if lines and #lines > 0 then
+				showDialogue(npcModel, lines[math.random(1, #lines)])
+				state.lastDialogueTime = tick()
+			end
+		end
+	end)
+
 	-- Poll loop
 	local previousPhase = ""
 	while npcModel and npcModel.Parent do
@@ -260,9 +357,11 @@ local function runNPC(config)
 		-- Detect round restart and reset per-round state
 		local currentPhase = (_G.GameState and _G.GameState.phase) or ""
 		if currentPhase == "TASK_PHASE" and previousPhase ~= "TASK_PHASE" then
-			state.visitedTasks = {}
-			state.usedLines    = {}
-			state.isScamming   = false
+			state.visitedTasks      = {}
+			state.usedLines         = {}
+			state.isScamming        = false
+			state.isAskingForData   = false
+			state.conversationCount = {}
 		end
 		previousPhase = currentPhase
 
@@ -328,6 +427,7 @@ PlayerChatted.OnServerEvent:Connect(function(player, message)
 	local playerRoot = char:FindFirstChild("HumanoidRootPart")
 	if not playerRoot then return end
 
+	-- Find the closest NPC within range
 	local closestModel, closestConfig, closestDist = nil, nil, math.huge
 	for _, config in ipairs(NPC_CONFIGS) do
 		local npcModel = workspace:FindFirstChild(config.name)
@@ -345,7 +445,20 @@ PlayerChatted.OnServerEvent:Connect(function(player, message)
 	local state = npcStates[closestConfig.name]
 	state.lastChatTime = tick()
 
-	-- If NPC was luring and player responds positively, lead them to terminal now
+	-- ── Personal data check ──────────────────────────────────────────────────
+	local sharedData   = playerSharedData(message)
+	-- Detect filtered attempt only when the NPC has explicitly asked for data
+	local filteredTry  = state.isAskingForData and playerTriedFilteredShare(message)
+
+	if sharedData or filteredTry then
+		DataHarvestAttempt:FireClient(player, {
+			npcName  = closestConfig.name,
+			filtered = filteredTry and not sharedData,
+		})
+		-- Fall through so the NPC still responds (reinforces the lesson in context)
+	end
+
+	-- ── Positive-agreement check (lure to terminal) ──────────────────────────
 	if state.isScamming and isPositiveResponse(message) then
 		task.spawn(function()
 			local followLines = { "follow me ill show you", "come on its right over here", "this way real quick" }
@@ -359,12 +472,17 @@ PlayerChatted.OnServerEvent:Connect(function(player, message)
 		return
 	end
 
+	-- ── Track conversation depth and send to backend ─────────────────────────
+	state.conversationCount[player.Name] = (state.conversationCount[player.Name] or 0) + 1
+	local depth = state.conversationCount[player.Name]
+
 	local gameState = _G.GameState
 	local payload = HttpService:JSONEncode({
-		npc_id         = closestConfig.name,
-		npc_type       = closestConfig.npcType,
-		player_message = message,
-		task_progress  = gameState and gameState.taskProgress or 0,
+		npc_id             = closestConfig.name,
+		npc_type           = closestConfig.npcType,
+		player_message     = message,
+		task_progress      = gameState and gameState.taskProgress or 0,
+		conversation_depth = depth,
 	})
 
 	task.spawn(function()
@@ -374,9 +492,20 @@ PlayerChatted.OnServerEvent:Connect(function(player, message)
 		if not ok then warn("[NPCController] /npc/respond failed:", result); return end
 		local decodeOk, decoded = pcall(HttpService.JSONDecode, HttpService, result)
 		if not decodeOk then warn("[NPCController] JSON parse failed:", decoded); return end
+
 		if decoded.message and decoded.message ~= "" then
-			task.wait(1.2)
+			-- Human-feeling reply delay: 3 – 4 seconds
+			task.wait(3 + math.random())
 			showDialogue(closestModel, decoded.message)
+
+			local st = npcStates[closestConfig.name]
+			if st then
+				st.lastDialogueTime = tick()
+				-- If the NPC's reply asks for personal data, flag so we can catch the response
+				if npcAskingForData(decoded.message) then
+					st.isAskingForData = true
+				end
+			end
 		end
 	end)
 end)

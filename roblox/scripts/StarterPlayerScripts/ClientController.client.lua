@@ -14,6 +14,7 @@ local TaskCompleted         = ReplicatedStorage:WaitForChild("TaskCompleted", 10
 local FakeTerminalTriggered = ReplicatedStorage:WaitForChild("FakeTerminalTriggered", 10)
 local UpdateTaskProgress    = ReplicatedStorage:WaitForChild("UpdateTaskProgress", 10)
 local PlayerScammed         = ReplicatedStorage:WaitForChild("PlayerScammed", 10)
+local DataHarvestAttempt    = ReplicatedStorage:WaitForChild("DataHarvestAttempt", 15)
 local PlayerChatted         = ReplicatedStorage:WaitForChild("PlayerChatted", 15)
 local NPCResponse           = ReplicatedStorage:WaitForChild("NPCResponse", 15)
 
@@ -116,20 +117,34 @@ UpdateTaskProgress.OnClientEvent:Connect(function(progress)
 end)
 
 -- ── Scam notification ─────────────────────────────────────────────────────────
-PlayerScammed.OnClientEvent:Connect(function(data)
-	-- Brief flash "YOU WERE SCAMMED" — full reveal at end screen
+local function showScamBanner(text, duration)
 	local gui = localPlayer.PlayerGui:FindFirstChild("DialogueGui")
-	if gui then
-		local scamFrame = gui:FindFirstChild("ScamAlert")
-		if scamFrame then
-			scamFrame.Visible = true
-			local tacticLabel = scamFrame:FindFirstChild("TacticLabel")
-			if tacticLabel then
-				tacticLabel.Text = "⚠ You were scammed!\nTactic: " .. (data.tactic or "unknown")
-			end
-			task.delay(4, function()
-				scamFrame.Visible = false
-			end)
-		end
+	if not gui then return end
+	local scamFrame = gui:FindFirstChild("ScamAlert")
+	if not scamFrame then return end
+	local tacticLabel = scamFrame:FindFirstChild("TacticLabel")
+	if tacticLabel then tacticLabel.Text = text end
+	scamFrame.Visible = true
+	task.delay(duration or 5, function() scamFrame.Visible = false end)
+end
+
+PlayerScammed.OnClientEvent:Connect(function(data)
+	showScamBanner("⚠ You were scammed!\nTactic: " .. (data.tactic or "unknown"), 5)
+end)
+
+-- ── Data harvest warning ───────────────────────────────────────────────────────
+DataHarvestAttempt.OnClientEvent:Connect(function(data)
+	if data.filtered then
+		-- Player tried to type personal info but Roblox censored it
+		showScamBanner(
+			"⚠ You almost gave away personal info!\nRoblox blocked it — never share passwords, emails, or real names with strangers online.",
+			7
+		)
+	else
+		-- Player actually typed recognisable personal data
+		showScamBanner(
+			"⚠ You just shared personal information with a scammer!\nNever give out your password, email, or real name in chat — even to someone who sounds official.",
+			8
+		)
 	end
 end)

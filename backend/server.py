@@ -63,6 +63,7 @@ class ChatMessage(BaseModel):
     npc_type: str
     player_message: str
     task_progress: float = 0.0
+    conversation_depth: int = 0
 
 
 @app.post("/npc/respond")
@@ -73,6 +74,7 @@ def npc_respond(body: ChatMessage):
         system_prompt=prompt,
         player_message=body.player_message,
         task_progress=body.task_progress,
+        conversation_depth=body.conversation_depth,
     )
     return {"message": reply}
 
