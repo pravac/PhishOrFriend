@@ -60,7 +60,7 @@ task.defer(function()
 	local taskFolder = workspace:WaitForChild("Tasks", 30)
 	if not taskFolder then warn("[GameManager] Tasks folder not found"); return end
 	for _, taskObj in ipairs(taskFolder:GetChildren()) do
-		local prompt = taskObj:FindFirstChildWhichIsA("ProximityPrompt")
+		local prompt = taskObj:FindFirstChildWhichIsA("ProximityPrompt", true)
 		if prompt then
 			prompt.Triggered:Connect(function(player)
 				onTaskDone(taskObj.Name)

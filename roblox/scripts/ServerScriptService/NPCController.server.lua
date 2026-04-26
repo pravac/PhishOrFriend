@@ -19,7 +19,7 @@ local PlayerChatted = getOrMakeEvent("PlayerChatted")
 local NPCResponse   = getOrMakeEvent("NPCResponse")
 local ShowDialogue  = getOrMakeEvent("ShowDialogue")
 
-local BACKEND_URL       = "https://neurology-spotting-wanting.ngrok-free.dev"
+local BACKEND_URL       = "https://phishorfriend-production.up.railway.app"
 local POLL_MIN          = 8
 local POLL_MAX          = 12
 local DIALOGUE_COOLDOWN = 25
