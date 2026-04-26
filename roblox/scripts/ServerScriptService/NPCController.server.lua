@@ -17,6 +17,7 @@ end
 
 local PlayerChatted = getOrMakeEvent("PlayerChatted")
 local NPCResponse   = getOrMakeEvent("NPCResponse")
+local ShowDialogue  = getOrMakeEvent("ShowDialogue")
 
 local BACKEND_URL       = "https://neurology-spotting-wanting.ngrok-free.dev"
 local POLL_MIN          = 8
@@ -108,7 +109,9 @@ end
 local function showDialogue(npcModel, message)
 	local head = npcModel:FindFirstChild("Head")
 	if head then Chat:Chat(head, message, Enum.ChatColor.White) end
-	NPCResponse:FireAllClients({ npcName = npcModel.Name, message = message })
+	local data = { npcName = npcModel.Name, message = message }
+	NPCResponse:FireAllClients(data)
+	ShowDialogue:FireAllClients(data)
 end
 
 -- ── Task lines (non-repeating per NPC) ───────────────────────────────────────
@@ -163,7 +166,7 @@ local function getNextDestination(state)
 end
 
 -- ── Positive response detection ───────────────────────────────────────────────
-local AGREE_WORDS = { "ok", "okay", "sure", "yeah", "yes", "alright", "fine", "lets", "coming", "omw", "where", "lead", "show" }
+local AGREE_WORDS = { "ok", "okay", "sure", "yeah", "yes", "alright", "fine", "lets", "coming", "omw", "on my way", "ill come", "coming now" }
 local function isPositiveResponse(message)
 	local lower = message:lower()
 	for _, word in ipairs(AGREE_WORDS) do
@@ -220,6 +223,13 @@ local function runNPC(config)
 	-- Wander loop
 	task.spawn(function()
 		while npcModel and npcModel.Parent do
+			-- Pause wandering outside task phase so NPCs don't roam during voting/reveal
+			local gs = _G.GameState
+			if gs and gs.phase ~= "TASK_PHASE" then
+				state.isScamming = false
+				task.wait(2)
+				continue
+			end
 			if not state.isScamming then
 				local dest, taskName = getNextDestination(state)
 				if dest then
@@ -243,8 +253,18 @@ local function runNPC(config)
 	end)
 
 	-- Poll loop
+	local previousPhase = ""
 	while npcModel and npcModel.Parent do
 		task.wait(math.random(POLL_MIN, POLL_MAX))
+
+		-- Detect round restart and reset per-round state
+		local currentPhase = (_G.GameState and _G.GameState.phase) or ""
+		if currentPhase == "TASK_PHASE" and previousPhase ~= "TASK_PHASE" then
+			state.visitedTasks = {}
+			state.usedLines    = {}
+			state.isScamming   = false
+		end
+		previousPhase = currentPhase
 
 		local npcRoot = npcModel:FindFirstChild("HumanoidRootPart")
 		if not npcRoot then continue end
@@ -279,14 +299,16 @@ local function runNPC(config)
 		elseif action.action == "LURE_TO_FAKE_TERMINAL" then
 			state.isScamming = true
 			local target = Players:FindFirstChild(action.target_player or "")
+			-- Always persist tactic data regardless of dialogue cooldown so the
+			-- end screen has accurate information even if the message is suppressed.
+			if target then
+				target:SetAttribute("LastTactic", action.tactic)
+				target:SetAttribute("LastRedFlags", table.concat(action.red_flags or {}, "\n• "))
+			end
 			if action.message ~= "" and (tick() - state.lastDialogueTime) > DIALOGUE_COOLDOWN
 				and (tick() - state.lastChatTime) > CHAT_SUPPRESS_SEC then
 				state.lastDialogueTime = tick()
 				showDialogue(npcModel, action.message)
-				if target then
-					target:SetAttribute("LastTactic", action.tactic)
-					target:SetAttribute("LastRedFlags", table.concat(action.red_flags or {}, "\n• "))
-				end
 			end
 			local fakeTerminal = findFakeTerminal()
 			if fakeTerminal then
