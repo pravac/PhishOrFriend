@@ -32,7 +32,7 @@ def generate_chat_response(
             {"role": "user", "content": user_msg},
         ],
         max_tokens=80,
-        temperature=0.9,
+        temperature=0.75,
     )
 
     text = response.choices[0].message.content or ""
