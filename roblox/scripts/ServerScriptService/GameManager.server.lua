@@ -102,6 +102,13 @@ local function getPlayerList()
 	return list
 end
 
+-- ── Helpers ───────────────────────────────────────────────────────────────────
+local function countVotes()
+	local n = 0
+	for _ in pairs(GameState.votes) do n += 1 end
+	return n
+end
+
 -- ── Voting ────────────────────────────────────────────────────────────────────
 local function runVoting()
 	broadcastPhase("VOTING")
@@ -114,20 +121,11 @@ local function runVoting()
 		votable[#votable+1] = n
 		addedNames[n] = true
 	end
-	-- From registry
+	-- From registry (NPCs only — skip workspace fallback to avoid stale models)
 	for npcName, _ in pairs(_G.NPCRegistry or {}) do
 		if not addedNames[npcName] then
 			votable[#votable+1] = npcName
 			addedNames[npcName] = true
-		end
-	end
-	-- Fallback: scan workspace for NPC models
-	for _, obj in ipairs(workspace:GetDescendants()) do
-		if obj:IsA("Model") and obj:FindFirstChild("Humanoid") and not Players:FindFirstChild(obj.Name) then
-			if not addedNames[obj.Name] then
-				votable[#votable+1] = obj.Name
-				addedNames[obj.Name] = true
-			end
 		end
 	end
 	print("[GameManager] Votable list:", table.concat(votable, ", "))
@@ -136,7 +134,7 @@ local function runVoting()
 
 	local deadline = tick() + VOTING_DURATION
 	while tick() < deadline do
-		if #GameState.votes >= #playerList then break end
+		if countVotes() >= #playerList then break end
 		task.wait(1)
 	end
 
@@ -208,7 +206,7 @@ SubmitVote.OnServerEvent:Connect(function(player, votedName)
 end)
 
 task.delay(5, function()
-	if GameState.phase == "LOBBY" then
+	while true do
 		startGame()
 	end
 end)
