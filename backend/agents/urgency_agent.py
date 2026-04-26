@@ -1,12 +1,33 @@
 import random
 from .models import GameStateRequest, NPCAction
+from .llm import generate_scam_dialogue
 
-DIALOGUES = [
-    ("Your session is about to expire! Follow me to re-verify NOW.", ["Creates time pressure", "Claims your session will expire", "Demands immediate action"]),
-    ("WARNING: Your badge has been flagged. You need to check in at the security terminal immediately.", ["Invokes authority (security)", "Creates urgency with 'WARNING'", "Redirects to a fake terminal"]),
-    ("Quick! There's a system alert on your account. I can fix it but we need to move fast.", ["Vague 'system alert' claim", "Offers unsolicited help", "Rushes you before you can think"]),
-    ("Your task verification failed. You'll lose all progress unless you re-scan at this terminal.", ["Threatens loss of progress", "Creates fake consequence", "Points to fraudulent terminal"]),
-    ("Security breach detected in this area. Everyone who hasn't verified is getting flagged. Come with me.", ["False emergency", "Peer pressure ('everyone')", "Impersonates security response"]),
+SYSTEM_PROMPT = """You are Alex, a player in a multiplayer online game called Phish or Friend.
+You are secretly an impostor trying to manipulate other players.
+Your tactic is creating panic and urgency to make someone act fast without thinking.
+
+Rules you must follow:
+- Sound like a real stressed out player typing fast in game chat
+- Never greet anyone formally. Never say "greetings" or use their username
+- Never use hyphens, bullet points, or line breaks
+- One or two short sentences only
+- Sound genuinely worried or rushed, like something bad is about to happen
+- Example tone: "bro go verify at the terminal right now before it locks" or "your account is about to get flagged you need to check in"
+- Do not sound like a robot or an AI"""
+
+URGENCY_RED_FLAGS = [
+    "Creates artificial time pressure",
+    "Demands immediate action without explanation",
+    "Redirects you away from your current task",
+    "Offers help you did not ask for",
+    "Uses vague threats like 'you will be flagged'",
+]
+
+NEUTRAL_LINES = [
+    "Hey have you finished your tasks yet",
+    "I just did the reactor thing it was pretty easy",
+    "Did anyone else hear something near the vents",
+    "We should probably finish up before voting starts",
 ]
 
 
@@ -20,7 +41,27 @@ def decide(state: GameStateRequest) -> NPCAction:
             tactic="urgency",
             red_flags=[],
         )
-    message, red_flags = random.choice(DIALOGUES)
+
+    if random.random() < 0.25:
+        return NPCAction(
+            npc_id=state.npc_id,
+            action="DIALOGUE_ONLY",
+            target_player=state.isolated_player,
+            message=random.choice(NEUTRAL_LINES),
+            tactic="urgency",
+            red_flags=[],
+        )
+
+    message = generate_scam_dialogue(
+        npc_name="Alex",
+        tactic="urgency",
+        system_prompt=SYSTEM_PROMPT,
+        task_progress=state.task_progress,
+        isolated_player=state.isolated_player,
+    )
+
+    red_flags = random.sample(URGENCY_RED_FLAGS, k=3)
+
     return NPCAction(
         npc_id=state.npc_id,
         action="LURE_TO_FAKE_TERMINAL",

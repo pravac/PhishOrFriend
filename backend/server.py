@@ -3,9 +3,10 @@ from pydantic import BaseModel
 from typing import Optional
 import uvicorn
 
-from agents.urgency_agent import decide as urgency_decide
-from agents.authority_agent import decide as authority_decide
+from agents.urgency_agent import decide as urgency_decide, SYSTEM_PROMPT as URGENCY_PROMPT
+from agents.authority_agent import decide as authority_decide, SYSTEM_PROMPT as AUTHORITY_PROMPT
 from agents.models import GameStateRequest
+from agents.llm import generate_chat_response
 
 app = FastAPI(title="Phish or Friend - Agent Bridge")
 
@@ -55,6 +56,25 @@ def npc_decide(body: RobloxGameState):
         "tactic": action.tactic,
         "red_flags": action.red_flags,
     }
+
+
+class ChatMessage(BaseModel):
+    npc_id: str
+    npc_type: str
+    player_message: str
+    task_progress: float = 0.0
+
+
+@app.post("/npc/respond")
+def npc_respond(body: ChatMessage):
+    prompt = URGENCY_PROMPT if body.npc_type == "urgency" else AUTHORITY_PROMPT
+    reply = generate_chat_response(
+        npc_name=body.npc_id,
+        system_prompt=prompt,
+        player_message=body.player_message,
+        task_progress=body.task_progress,
+    )
+    return {"message": reply}
 
 
 @app.post("/round/reveal")

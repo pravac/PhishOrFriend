@@ -1,43 +1,95 @@
 -- GameManager.server.lua
--- Manages overall game phases: LOBBY → TASK_PHASE → VOTING → REVEAL → LOBBY
-
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local RunService = game:GetService("RunService")
 
--- Wait for events to be created by GameEvents script
-local function waitForEvent(name)
-	return ReplicatedStorage:WaitForChild(name, 10)
+-- ── Create ALL RemoteEvents here first so clients can find them ───────────────
+local function makeEvent(name)
+	local e = ReplicatedStorage:FindFirstChild(name)
+	if not e then
+		e = Instance.new("RemoteEvent")
+		e.Name = name
+		e.Parent = ReplicatedStorage
+	end
+	return e
 end
 
-local PhaseChanged        = waitForEvent("PhaseChanged")
-local OpenVotingUI        = waitForEvent("OpenVotingUI")
-local SubmitVote          = waitForEvent("SubmitVote")
-local VoteResult          = waitForEvent("VoteResult")
-local ShowEndScreen       = waitForEvent("ShowEndScreen")
-local UpdateTaskProgress  = waitForEvent("UpdateTaskProgress")
+local PhaseChanged        = makeEvent("PhaseChanged")
+makeEvent("PlayerChatted")
+makeEvent("NPCResponse")
+local ShowDialogue        = makeEvent("ShowDialogue")
+local HideDialogue        = makeEvent("HideDialogue")
+local TaskCompleted       = makeEvent("TaskCompleted")
+local FakeTerminalTriggered = makeEvent("FakeTerminalTriggered")
+local UpdateTaskProgress  = makeEvent("UpdateTaskProgress")
+local OpenVotingUI        = makeEvent("OpenVotingUI")
+local SubmitVote          = makeEvent("SubmitVote")
+local VoteResult          = makeEvent("VoteResult")
+local ShowEndScreen       = makeEvent("ShowEndScreen")
+local PlayerScammed       = makeEvent("PlayerScammed")
 
--- ── Config ──────────────────────────────────────────────────────────────────
-local TASK_PHASE_DURATION = 90   -- seconds
+-- ── Config ────────────────────────────────────────────────────────────────────
+local TASK_PHASE_DURATION = 90
 local VOTING_DURATION     = 30
 local REVEAL_DURATION     = 20
-local MIN_PLAYERS         = 1    -- set to 1 so you can test solo
+local TOTAL_TASKS         = 4
 
--- ── Game State ───────────────────────────────────────────────────────────────
+-- ── Game State ────────────────────────────────────────────────────────────────
 local GameState = {
-	phase = "LOBBY",
-	agents = {},           -- {[playerName] = "urgency" | "authority" | nil}
-	scammedPlayers = {},   -- list of playerNames
-	votes = {},            -- {[voterName] = votedName}
-	taskProgress = 0,
-	totalTasks = 4,
+	phase          = "LOBBY",
+	scammedPlayers = {},
+	votes          = {},
+	taskProgress   = 0,
 	completedTasks = 0,
 }
-
--- Exposed so NPCController can read/write it
 _G.GameState = GameState
 
--- ── Helpers ──────────────────────────────────────────────────────────────────
+-- ── Task tracking (replaces require of TaskManager) ───────────────────────────
+local completedTaskNames = {}
+
+local function onTaskDone(taskName)
+	if completedTaskNames[taskName] then return end
+	completedTaskNames[taskName] = true
+	GameState.completedTasks += 1
+	GameState.taskProgress = GameState.completedTasks / TOTAL_TASKS
+	print("[GameManager] Task completed:", taskName, "| progress:", GameState.taskProgress)
+	UpdateTaskProgress:FireAllClients(GameState.taskProgress)
+end
+
+-- Server-side ProximityPrompt detection (more reliable than client RemoteEvent)
+task.defer(function()
+	local taskFolder = workspace:WaitForChild("Tasks", 30)
+	if not taskFolder then warn("[GameManager] Tasks folder not found"); return end
+	for _, taskObj in ipairs(taskFolder:GetChildren()) do
+		local prompt = taskObj:FindFirstChildWhichIsA("ProximityPrompt")
+		if prompt then
+			prompt.Triggered:Connect(function(player)
+				onTaskDone(taskObj.Name)
+			end)
+			print("[GameManager] Hooked task:", taskObj.Name)
+		end
+	end
+end)
+
+-- Keep client RemoteEvent as fallback
+TaskCompleted.OnServerEvent:Connect(function(player, taskName)
+	onTaskDone(taskName)
+end)
+
+FakeTerminalTriggered.OnServerEvent:Connect(function(player)
+	local already = false
+	for _, n in ipairs(GameState.scammedPlayers) do
+		if n == player.Name then already = true; break end
+	end
+	if not already then
+		table.insert(GameState.scammedPlayers, player.Name)
+		local tactic   = player:GetAttribute("LastTactic") or "unknown"
+		local redFlags = player:GetAttribute("LastRedFlags") or ""
+		PlayerScammed:FireClient(player, { playerName=player.Name, tactic=tactic, redFlags=redFlags })
+		print("[GameManager] SCAMMED:", player.Name)
+	end
+end)
+
+-- ── Helpers ───────────────────────────────────────────────────────────────────
 local function broadcastPhase(phase)
 	GameState.phase = phase
 	PhaseChanged:FireAllClients(phase)
@@ -46,31 +98,9 @@ end
 
 local function getPlayerList()
 	local list = {}
-	for _, p in ipairs(Players:GetPlayers()) do
-		table.insert(list, p.Name)
-	end
+	for _, p in ipairs(Players:GetPlayers()) do table.insert(list, p.Name) end
 	return list
 end
-
-local function assignRoles()
-	GameState.agents = {}
-	local players = Players:GetPlayers()
-	-- First player = urgency NPC controller, second = authority (for demo purposes
-	-- In real play these are AI NPCs, not human players — roles just track tactic context)
-	-- We mark no human players as agents; NPCs are spawned by NPCController
-end
-
--- ── Task Progress ─────────────────────────────────────────────────────────────
-local TaskManager = require(script.Parent:WaitForChild("TaskManager"))
-
-local function onTaskCompleted()
-	GameState.completedTasks += 1
-	GameState.taskProgress = GameState.completedTasks / GameState.totalTasks
-	UpdateTaskProgress:FireAllClients(GameState.taskProgress)
-	print("[GameManager] Task progress:", GameState.taskProgress)
-end
-
-TaskManager.OnTaskCompleted:Connect(onTaskCompleted)
 
 -- ── Voting ────────────────────────────────────────────────────────────────────
 local function runVoting()
@@ -78,17 +108,31 @@ local function runVoting()
 	GameState.votes = {}
 
 	local playerList = getPlayerList()
-	-- include NPC names so players can vote them out
-	local votableNames = {}
-	for _, name in ipairs(playerList) do table.insert(votableNames, name) end
-	-- Add NPC names from workspace
-	for _, npc in ipairs(workspace:GetChildren()) do
-		if npc:IsA("Model") and npc:GetAttribute("IsScammerNPC") then
-			table.insert(votableNames, npc.Name)
+	local votable = {}
+	local addedNames = {}
+	for _, n in ipairs(playerList) do
+		votable[#votable+1] = n
+		addedNames[n] = true
+	end
+	-- From registry
+	for npcName, _ in pairs(_G.NPCRegistry or {}) do
+		if not addedNames[npcName] then
+			votable[#votable+1] = npcName
+			addedNames[npcName] = true
 		end
 	end
+	-- Fallback: scan workspace for NPC models
+	for _, obj in ipairs(workspace:GetDescendants()) do
+		if obj:IsA("Model") and obj:FindFirstChild("Humanoid") and not Players:FindFirstChild(obj.Name) then
+			if not addedNames[obj.Name] then
+				votable[#votable+1] = obj.Name
+				addedNames[obj.Name] = true
+			end
+		end
+	end
+	print("[GameManager] Votable list:", table.concat(votable, ", "))
 
-	OpenVotingUI:FireAllClients({ players = votableNames })
+	OpenVotingUI:FireAllClients({ players = votable })
 
 	local deadline = tick() + VOTING_DURATION
 	while tick() < deadline do
@@ -96,12 +140,10 @@ local function runVoting()
 		task.wait(1)
 	end
 
-	-- Tally votes
 	local tally = {}
 	for _, voted in pairs(GameState.votes) do
 		tally[voted] = (tally[voted] or 0) + 1
 	end
-
 	local topName, topCount = nil, 0
 	for name, count in pairs(tally) do
 		if count > topCount then topName, topCount = name, count end
@@ -111,43 +153,19 @@ local function runVoting()
 	VoteResult:FireAllClients(eliminated)
 	print("[GameManager] Eliminated:", eliminated)
 
-	-- Remove voted NPC from workspace
-	if eliminated ~= "No one" then
-		local npc = workspace:FindFirstChild(eliminated)
-		if npc and npc:GetAttribute("IsScammerNPC") then
-			npc:Destroy()
-		end
-	end
-
+	local npc = workspace:FindFirstChild(eliminated)
+	if npc and npc:GetAttribute("IsScammerNPC") then npc:Destroy() end
 	task.wait(3)
 end
 
 -- ── Reveal ────────────────────────────────────────────────────────────────────
 local function runReveal()
 	broadcastPhase("REVEAL")
-
-	-- Collect which NPCs were agents and their tactics
 	local agentsRevealed = {}
-	for _, npc in ipairs(workspace:GetChildren()) do
-		if npc:IsA("Model") and npc:GetAttribute("IsScammerNPC") then
-			table.insert(agentsRevealed, {
-				name   = npc.Name,
-				tactic = npc:GetAttribute("NPCType") or "unknown",
-			})
-		end
+	local registry = _G.NPCRegistry or {}
+	for npcName, info in pairs(registry) do
+		table.insert(agentsRevealed, { name = npcName, tactic = info.npcType })
 	end
-	-- Also include destroyed ones tracked in NPCController
-	local npcController = _G.NPCRegistry or {}
-	for npcName, info in pairs(npcController) do
-		local alreadyListed = false
-		for _, a in ipairs(agentsRevealed) do
-			if a.name == npcName then alreadyListed = true; break end
-		end
-		if not alreadyListed then
-			table.insert(agentsRevealed, { name = npcName, tactic = info.npcType })
-		end
-	end
-
 	local tacticsUsed = {}
 	local seen = {}
 	for _, info in ipairs(agentsRevealed) do
@@ -156,25 +174,22 @@ local function runReveal()
 			table.insert(tacticsUsed, info.tactic)
 		end
 	end
-
 	ShowEndScreen:FireAllClients({
 		scammedPlayers = GameState.scammedPlayers,
 		agentsRevealed = agentsRevealed,
 		tacticsUsed    = tacticsUsed,
 	})
-
 	task.wait(REVEAL_DURATION)
 end
 
 -- ── Main Loop ─────────────────────────────────────────────────────────────────
 local function startGame()
-	assignRoles()
 	broadcastPhase("TASK_PHASE")
 	GameState.completedTasks = 0
 	GameState.taskProgress   = 0
 	GameState.scammedPlayers = {}
+	completedTaskNames       = {}
 
-	-- Wait for task phase to end (time limit or all tasks done)
 	local deadline = tick() + TASK_PHASE_DURATION
 	while tick() < deadline and GameState.taskProgress < 1.0 do
 		task.wait(1)
@@ -182,28 +197,16 @@ local function startGame()
 
 	runVoting()
 	runReveal()
-
-	-- Reset for next round
 	broadcastPhase("LOBBY")
 	task.wait(10)
 end
 
--- Vote handler
 SubmitVote.OnServerEvent:Connect(function(player, votedName)
 	if GameState.phase == "VOTING" and not GameState.votes[player.Name] then
 		GameState.votes[player.Name] = votedName
-		print("[GameManager] Vote:", player.Name, "→", votedName)
 	end
 end)
 
--- Wait for enough players then start
-Players.PlayerAdded:Connect(function()
-	if GameState.phase == "LOBBY" and #Players:GetPlayers() >= MIN_PLAYERS then
-		task.delay(3, startGame)
-	end
-end)
-
--- Auto-start for solo testing
 task.delay(5, function()
 	if GameState.phase == "LOBBY" then
 		startGame()

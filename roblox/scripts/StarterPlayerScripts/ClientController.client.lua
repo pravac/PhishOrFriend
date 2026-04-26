@@ -4,6 +4,7 @@
 
 local Players           = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local TextChatService   = game:GetService("TextChatService")
 
 local localPlayer = Players.LocalPlayer
 
@@ -13,6 +14,8 @@ local TaskCompleted         = ReplicatedStorage:WaitForChild("TaskCompleted", 10
 local FakeTerminalTriggered = ReplicatedStorage:WaitForChild("FakeTerminalTriggered", 10)
 local UpdateTaskProgress    = ReplicatedStorage:WaitForChild("UpdateTaskProgress", 10)
 local PlayerScammed         = ReplicatedStorage:WaitForChild("PlayerScammed", 10)
+local PlayerChatted         = ReplicatedStorage:WaitForChild("PlayerChatted", 15)
+local NPCResponse           = ReplicatedStorage:WaitForChild("NPCResponse", 15)
 
 -- ── Task Interaction ──────────────────────────────────────────────────────────
 -- Real tasks: each task object in Workspace should have a ProximityPrompt
@@ -74,10 +77,27 @@ if localPlayer.Character then
 	onCharacterAdded()
 end
 
+-- ── Forward player chat to server for NPC response ───────────────────────────
+TextChatService.MessageReceived:Connect(function(msg)
+	if msg.TextSource and msg.TextSource.UserId == localPlayer.UserId then
+		PlayerChatted:FireServer(msg.Text)
+	end
+end)
+
+-- ── Display NPC messages in the chat log ──────────────────────────────────────
+NPCResponse.OnClientEvent:Connect(function(data)
+	print("[Client] NPCResponse received:", data.npcName, "→", data.message)
+	local channel = TextChatService.TextChannels:FindFirstChild("RBXGeneral")
+	if channel then
+		channel:DisplaySystemMessage("[" .. data.npcName .. "]: " .. data.message)
+	else
+		warn("[Client] RBXGeneral channel not found")
+	end
+end)
+
 -- ── Phase change handling ─────────────────────────────────────────────────────
 PhaseChanged.OnClientEvent:Connect(function(phase)
 	print("[Client] Phase →", phase)
-	-- Phase-specific UI is handled in the GUI scripts
 end)
 
 -- ── Task progress bar update ──────────────────────────────────────────────────
