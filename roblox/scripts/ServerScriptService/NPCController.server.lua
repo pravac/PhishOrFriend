@@ -144,7 +144,6 @@ local function showDialogue(npcModel, message)
 	if head then Chat:Chat(head, message, Enum.ChatColor.White) end
 	local data = { npcName = npcModel.Name, message = message }
 	NPCResponse:FireAllClients(data)
-	ShowDialogue:FireAllClients(data)
 end
 
 -- ── Task lines (non-repeating per NPC) ───────────────────────────────────────
@@ -229,10 +228,23 @@ local DATA_REQUEST_KEYWORDS = {
 	"log into your", "verify your identity", "account password",
 }
 
+local DATA_SHARE_LABELS = {
+	"email address",
+	"password",
+	"password",
+	"password",
+	"password",
+	"phone number",
+	"real name",
+	"real name",
+}
+
 local function playerSharedData(message)
 	local lower = message:lower()
-	for _, pattern in ipairs(DATA_SHARE_PATTERNS) do
-		if lower:match(pattern) then return true end
+	for i, pattern in ipairs(DATA_SHARE_PATTERNS) do
+		if lower:match(pattern) then
+			return DATA_SHARE_LABELS[i] or "personal information"
+		end
 	end
 	return false
 end
@@ -455,6 +467,15 @@ PlayerChatted.OnServerEvent:Connect(function(player, message)
 			npcName  = closestConfig.name,
 			filtered = filteredTry and not sharedData,
 		})
+		-- Record for end-screen reveal (sharedData is a label string, or false if Roblox filtered it)
+		if _G.GameState and _G.GameState.sensitiveInfoShared then
+			local gs = _G.GameState
+			local label = sharedData or "personal information"
+			if not gs.sensitiveInfoShared[player.Name] then
+				gs.sensitiveInfoShared[player.Name] = {}
+			end
+			table.insert(gs.sensitiveInfoShared[player.Name], label)
+		end
 		-- Fall through so the NPC still responds (reinforces the lesson in context)
 	end
 

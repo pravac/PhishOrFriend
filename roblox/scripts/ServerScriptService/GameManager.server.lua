@@ -27,6 +27,7 @@ local VoteResult          = makeEvent("VoteResult")
 local ShowEndScreen       = makeEvent("ShowEndScreen")
 local PlayerScammed       = makeEvent("PlayerScammed")
 makeEvent("DataHarvestAttempt")
+local SensitiveInfoShared = makeEvent("SensitiveInfoShared")
 
 -- ── Config ────────────────────────────────────────────────────────────────────
 local TASK_PHASE_DURATION = 90
@@ -36,11 +37,12 @@ local TOTAL_TASKS         = 4
 
 -- ── Game State ────────────────────────────────────────────────────────────────
 local GameState = {
-	phase          = "LOBBY",
-	scammedPlayers = {},
-	votes          = {},
-	taskProgress   = 0,
-	completedTasks = 0,
+	phase               = "LOBBY",
+	scammedPlayers      = {},
+	votes               = {},
+	taskProgress        = 0,
+	completedTasks      = 0,
+	sensitiveInfoShared = {},
 }
 _G.GameState = GameState
 
@@ -88,6 +90,17 @@ FakeTerminalTriggered.OnServerEvent:Connect(function(player)
 		PlayerScammed:FireClient(player, { playerName=player.Name, tactic=tactic, redFlags=redFlags })
 		print("[GameManager] SCAMMED:", player.Name)
 	end
+end)
+
+SensitiveInfoShared.OnServerEvent:Connect(function(player, infoType)
+	if GameState.phase ~= "TASK_PHASE" then return end
+	local list = GameState.sensitiveInfoShared[player.Name]
+	if not list then
+		list = {}
+		GameState.sensitiveInfoShared[player.Name] = list
+	end
+	table.insert(list, infoType)
+	print("[GameManager] Sensitive info shared by", player.Name, ":", infoType)
 end)
 
 -- ── Helpers ───────────────────────────────────────────────────────────────────
@@ -174,9 +187,10 @@ local function runReveal()
 		end
 	end
 	ShowEndScreen:FireAllClients({
-		scammedPlayers = GameState.scammedPlayers,
-		agentsRevealed = agentsRevealed,
-		tacticsUsed    = tacticsUsed,
+		scammedPlayers      = GameState.scammedPlayers,
+		agentsRevealed      = agentsRevealed,
+		tacticsUsed         = tacticsUsed,
+		sensitiveInfoShared = GameState.sensitiveInfoShared,
 	})
 	task.wait(REVEAL_DURATION)
 end
@@ -186,8 +200,9 @@ local function startGame()
 	broadcastPhase("TASK_PHASE")
 	GameState.completedTasks = 0
 	GameState.taskProgress   = 0
-	GameState.scammedPlayers = {}
-	completedTaskNames       = {}
+	GameState.scammedPlayers      = {}
+	GameState.sensitiveInfoShared = {}
+	completedTaskNames            = {}
 
 	local deadline = tick() + TASK_PHASE_DURATION
 	while tick() < deadline and GameState.taskProgress < 1.0 do

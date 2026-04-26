@@ -12,8 +12,8 @@ local screenGui   = script.Parent
 -- ── Build UI ──────────────────────────────────────────────────────────────────
 local endFrame = Instance.new("Frame")
 endFrame.Name             = "EndFrame"
-endFrame.Size             = UDim2.new(0, 500, 0, 580)
-endFrame.Position         = UDim2.new(0.5, -250, 0.5, -290)
+endFrame.Size             = UDim2.new(0, 500, 0, 640)
+endFrame.Position         = UDim2.new(0.5, -250, 0.5, -320)
 endFrame.BackgroundColor3 = Color3.fromRGB(12, 12, 20)
 endFrame.BackgroundTransparency = 0.05
 endFrame.BorderSizePixel  = 0
@@ -63,10 +63,30 @@ agentsLabel.TextXAlignment  = Enum.TextXAlignment.Left
 agentsLabel.TextWrapped     = true
 agentsLabel.Parent          = endFrame
 
+local sensitiveInfoLabel = Instance.new("TextLabel")
+sensitiveInfoLabel.Name             = "SensitiveInfoLabel"
+sensitiveInfoLabel.Size             = UDim2.new(1, 0, 0, 50)
+sensitiveInfoLabel.Position         = UDim2.new(0, 0, 0, 148)
+sensitiveInfoLabel.BackgroundColor3 = Color3.fromRGB(60, 20, 20)
+sensitiveInfoLabel.BackgroundTransparency = 0.2
+sensitiveInfoLabel.Text             = ""
+sensitiveInfoLabel.TextColor3       = Color3.fromRGB(255, 220, 80)
+sensitiveInfoLabel.Font             = Enum.Font.GothamBold
+sensitiveInfoLabel.TextSize         = 13
+sensitiveInfoLabel.TextWrapped      = true
+sensitiveInfoLabel.TextXAlignment   = Enum.TextXAlignment.Left
+sensitiveInfoLabel.Visible          = false
+sensitiveInfoLabel.Parent           = endFrame
+Instance.new("UICorner", sensitiveInfoLabel).CornerRadius = UDim.new(0, 8)
+local siPad = Instance.new("UIPadding")
+siPad.PaddingLeft = UDim.new(0, 10); siPad.PaddingRight = UDim.new(0, 10)
+siPad.PaddingTop  = UDim.new(0, 6);  siPad.PaddingBottom = UDim.new(0, 6)
+siPad.Parent = sensitiveInfoLabel
+
 local tacticsFrame = Instance.new("Frame")
 tacticsFrame.Name            = "TacticsFrame"
 tacticsFrame.Size            = UDim2.new(1, 0, 0, 300)
-tacticsFrame.Position        = UDim2.new(0, 0, 0, 148)
+tacticsFrame.Position        = UDim2.new(0, 0, 0, 208)
 tacticsFrame.BackgroundTransparency = 1
 tacticsFrame.Parent          = endFrame
 
@@ -166,6 +186,18 @@ ShowEndScreen.OnClientEvent:Connect(function(data)
 	agentsLabel.Text = #lines > 0
 		and ("🤖 Agents:\n" .. table.concat(lines, "\n"))
 		or  "No agents active."
+
+	local myInfo = (data.sensitiveInfoShared or {})[localPlayer.Name]
+	if myInfo and #myInfo > 0 then
+		local unique, seen = {}, {}
+		for _, v in ipairs(myInfo) do
+			if not seen[v] then seen[v] = true; table.insert(unique, v) end
+		end
+		sensitiveInfoLabel.Text = "⚠ You shared sensitive info: " .. table.concat(unique, ", ") .. "\nNever give personal info to strangers in chat — online or in real life."
+		sensitiveInfoLabel.Visible = true
+	else
+		sensitiveInfoLabel.Visible = false
+	end
 
 	for _, tactic in ipairs(data.tacticsUsed or {}) do
 		buildTacticCard(tactic)
